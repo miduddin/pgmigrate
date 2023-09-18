@@ -7,5 +7,4 @@ var (
 	yellow = color.YellowString
 	green  = color.GreenString
 	red    = color.RedString
-	blue   = color.BlueString
 )

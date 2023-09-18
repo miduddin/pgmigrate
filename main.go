@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/golang-migrate/migrate/v4"
@@ -52,13 +53,21 @@ func main() {
 	m.Log = &logger{}
 
 	ver, dirty, err := m.Version()
-	panicIfError(err)
 
 	fmt.Printf(
 		"Connected to host=%s db=%s schema=%s user=%s\n",
 		yellow(svc["host"]), yellow(svc["dbname"]), yellow(svc["search_path"]), yellow(svc["user"]),
 	)
-	fmt.Printf("Current migration version: %s (dirty: %v)\n\n", white("%d", ver), dirty)
+
+	if err != nil {
+		if err.Error() == "no migration" {
+			fmt.Printf("First time running migration.\n")
+		} else {
+			panic(err)
+		}
+	} else {
+		fmt.Printf("Current migration version: %s (dirty: %v)\n\n", white("%d", ver), dirty)
+	}
 
 	if dirty {
 		fmt.Println(red("Fix dirty migration version first!"))
@@ -93,10 +102,15 @@ func printPendingMigrations(version uint, path string) bool {
 		return files[i].Name() < files[j].Name()
 	})
 
-	vs := fmt.Sprint(version)
 	count := 0
 	for _, f := range files {
-		if f.Name() > vs && !strings.HasPrefix(f.Name(), vs) && strings.HasSuffix(f.Name(), ".up.sql") {
+		if !strings.HasSuffix(f.Name(), ".up.sql") {
+			continue
+		}
+
+		fvs := strings.Split(f.Name(), "_")[0]
+		fv, _ := strconv.ParseUint(fvs, 10, 64)
+		if uint(fv) > version {
 			b, err := os.ReadFile(filepath.Join(path, f.Name()))
 			panicIfError(err)
 
