@@ -9,8 +9,15 @@ import (
 )
 
 func loadPgService(name string) (map[string]string, error) {
-	home, _ := os.UserHomeDir()
-	cfg, err := ini.Load(filepath.Join(home, ".pg_service.conf"))
+	pgservicePath := os.Getenv("PGSERVICEFILE")
+	if pgservicePath == "" {
+		home, _ := os.UserHomeDir()
+		pgservicePath = filepath.Join(home, ".pg_service.conf")
+	}
+
+	os.Unsetenv("PGSERVICEFILE")
+
+	cfg, err := ini.Load(pgservicePath)
 	if err != nil {
 		return nil, fmt.Errorf("load pg_service file: %w", err)
 	}
