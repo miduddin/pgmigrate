@@ -15,6 +15,31 @@ import (
 	_ "github.com/lib/pq"
 )
 
+func main() {
+	if len(os.Args) < 3 {
+		fmt.Println("Usage:\n\tpgmigrate <pgservice> <migrations_dir>")
+		os.Exit(1)
+	}
+
+	db, err := pgConnect(os.Args[1])
+	panicIfError(err)
+
+	m, err := newMigrate(db, os.Args[2])
+	panicIfError(err)
+
+	ver, dirty, err := currentMigrationVersion(m)
+	panicIfError(err)
+	if dirty {
+		fmt.Println(red("Fix dirty migration version first!"))
+		os.Exit(1)
+	}
+
+	err = up(m, *ver, os.Args[2])
+	panicIfError(err)
+
+	fmt.Println(green("Done!"))
+}
+
 type logger struct{}
 
 func (l *logger) Printf(format string, args ...any) {
@@ -25,77 +50,53 @@ func (l *logger) Verbose() bool {
 	return false
 }
 
-func main() {
-	if len(os.Args) < 3 {
-		fmt.Print("First arg: pgservice name, second arg: migrations dir.")
-		os.Exit(1)
-	}
-
-	svc, err := loadPgService(os.Args[1])
-	panicIfError(err)
-	if svc["search_path"] == "" {
-		svc["search_path"] = "public"
-	}
-
-	db, err := sql.Open("postgres", fmt.Sprintf(
-		"postgres://%s@%s/%s?sslmode=disable&search_path=%s",
-		svc["user"], svc["host"], svc["dbname"], svc["search_path"],
-	))
-	panicIfError(err)
-	panicIfError(db.Ping())
-
-	dr, err := postgres.WithInstance(db, &postgres.Config{})
-	panicIfError(err)
-
+func newMigrate(db *sql.DB, migrationDir string) (*migrate.Migrate, error) {
+	dr, _ := postgres.WithInstance(db, &postgres.Config{})
 	wd, _ := os.Getwd()
-	m, err := migrate.NewWithDatabaseInstance("file://"+filepath.Join(wd, os.Args[2]), "postgres", dr)
-	panicIfError(err)
+	m, err := migrate.NewWithDatabaseInstance("file://"+filepath.Join(wd, migrationDir), "postgres", dr)
+	if err != nil {
+		return nil, fmt.Errorf("init migrate: %w", err)
+	}
+
 	m.Log = &logger{}
+	return m, nil
+}
 
+func currentMigrationVersion(m *migrate.Migrate) (*uint, bool, error) {
 	ver, dirty, err := m.Version()
-
-	fmt.Printf(
-		"Connected to host=%s db=%s schema=%s user=%s\n",
-		yellow(svc["host"]), yellow(svc["dbname"]), yellow(svc["search_path"]), yellow(svc["user"]),
-	)
-
 	if err != nil {
 		if err.Error() == "no migration" {
-			fmt.Printf("First time running migration.\n")
+			fmt.Println("First time running migration.")
 		} else {
-			panic(err)
+			return nil, false, fmt.Errorf("get current migration version: %w", err)
 		}
 	} else {
 		fmt.Printf("Current migration version: %s (dirty: %v)\n\n", white("%d", ver), dirty)
 	}
 
-	if dirty {
-		fmt.Println(red("Fix dirty migration version first!"))
-		os.Exit(1)
-	}
+	return &ver, dirty, nil
+}
 
+func up(m *migrate.Migrate, ver uint, migrationDir string) error {
 	fmt.Printf("Pending migrations:\n\n")
-
-	if !printPendingMigrations(ver, os.Args[2]) {
+	if !printPendingMigrations(ver, migrationDir) {
 		fmt.Println(green("None, database is up to date!"))
-		return
+		return nil
 	}
 
 	fmt.Print(yellow("Continue with migrations? (y/n): "))
 	var in string
-	fmt.Scanln(&in)
+	_, _ = fmt.Scanln(&in)
 	if strings.ToLower(in) != "y" {
 		fmt.Println("Aborting.")
-		return
+		return nil
 	}
 
-	panicIfError(m.Up())
-
-	fmt.Println(green("Done."))
+	return m.Up()
 }
 
-func printPendingMigrations(version uint, path string) bool {
-	files, err := os.ReadDir(path)
+func printPendingMigrations(currentVersion uint, migrationDir string) bool {
+	files, err := os.ReadDir(migrationDir)
 	panicIfError(err)
 
 	sort.Slice(files, func(i, j int) bool {
@@ -110,8 +111,8 @@ func printPendingMigrations(version uint, path string) bool {
 
 		fvs := strings.Split(f.Name(), "_")[0]
 		fv, _ := strconv.ParseUint(fvs, 10, 64)
-		if uint(fv) > version {
-			b, err := os.ReadFile(filepath.Join(path, f.Name()))
+		if uint(fv) > currentVersion {
+			b, err := os.ReadFile(filepath.Join(migrationDir, f.Name()))
 			panicIfError(err)
 
 			count++
